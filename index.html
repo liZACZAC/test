@@ -156,14 +156,14 @@
                         // 只在辨識到 R 或 L 時才發送訊號並鎖定
                         if (highestClass === "R" || highestClass === "L") {
                             isCooldown = true; 
-                            predBox.innerText = `觸發指令【${highestClass}】！鎖定 1 秒...`;
+                            predBox.innerText = `觸發指令【${highestClass}】！鎖定 3 秒...`;
                             
                             sendBleCommand(highestClass);
 
-                            // 1 秒後解鎖
+                            // 3 秒後解鎖
                             setTimeout(() => {
                                 isCooldown = false;
-                            }, 1000);
+                            }, 3000);
                         } 
                         else if (highestClass === "mid") {
                             // 【已修正】辨識到 mid 時只更新網頁狀態文字，不發送任何藍牙訊號
