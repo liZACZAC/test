@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ESP32 AI Servo 控制器</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; background: #f0f3f5; padding: 15px; color: #333; margin: 0; }
+        .container { max-width: 450px; margin: auto; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+        button { font-size: 15px; padding: 12px 20px; margin: 8px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        .btn-blue { background: #007bff; color: white; }
+        .btn-green { background: #28a745; color: white; }
+        .btn-orange { background: #fd7e14; color: white; }
+        #webcam-container { margin: 15px auto; border: 4px solid #ccc; border-radius: 10px; width: 300px; height: 300px; overflow: hidden; background: #000; position: relative; }
+        video, canvas { width: 100%; height: 100%; object-fit: cover; }
+        .mirror { transform: scaleX(-1); } /* 前鏡頭鏡像 */
+        .status-box { padding: 12px; margin: 10px 0; border-radius: 8px; font-weight: bold; font-size: 1.1rem; background: #e9ecef; }
+        #label-container { display: flex; flex-direction: column; align-items: center; margin-top: 10px; }
+        .label-bar { width: 90%; background: #dee2e6; border-radius: 5px; margin: 4px 0; position: relative; height: 22px; }
+        .label-fill { height: 100%; background: #17a2b8; width: 0%; transition: width 0.1s; border-radius: 5px; }
+        .label-text { position: absolute; width: 100%; text-align: center; top: 2px; font-size: 11px; font-weight: bold; color: #000; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>AI 藍牙馬達控制器</h2>
+    
+    <button class="btn-blue" id="connectBle">連接 ESP32 藍牙</button>
+    <button class="btn-orange" id="switchCam" onclick="toggleCamera()" disabled>切換前後鏡頭</button>
+    <button class="btn-green" id="startAi" onclick="initAI()">啟動 AI 辨識</button>
+
+    <div id="webcam-container"></div>
+    
+    <div class="status-box" id="ble-status">藍牙狀態: 未連線</div>
+    <div class="status-box" id="current-prediction">AI 狀態: 等待啟動...</div>
+
+    <div id="label-container"></div>
+</div>
+
+<script type="text/javascript">
+    const MODEL_URL = "https://teachablemachine.withgoogle.com/models/MNvudxhn0/";
+    const SERVICE_UUID = "4fa2c730-1857-11e6-a837-0800200c9a66";
+    const CHARACTERISTIC_UUID = "4fa2c731-1857-11e6-a837-0800200c9a66";
+
+    let model, localStream, animationFrameId;
+    let bleCharacteristic = null;
+    let lastCommand = ""; 
+    let useFacingMode = "user"; // "user"=前鏡頭, "environment"=後鏡頭
+    let maxPredictions = 3;
+
+    // 1. 藍牙連線
+    document.getElementById('connectBle').addEventListener('click', async () => {
+        const bleStatus = document.getElementById('ble-status');
+        try {
+            bleStatus.innerText = "正在尋找藍牙裝置...";
+            const device = await navigator.bluetooth.requestDevice({
+                filters: [{ name: 'ESP32_Servo_AI' }],
+                optionalServices: [SERVICE_UUID]
+            });
+            const server = await device.gatt.connect();
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+            bleStatus.innerText = "藍牙狀態: 已連線到 " + device.name;
+            bleStatus.style.color = "green";
+        } catch (error) {
+            bleStatus.innerText = "連線失敗: " + error.message;
+            bleStatus.style.color = "red";
+        }
+    });
+
+    // 2. 啟動 AI
+    async function initAI() {
+        document.getElementById('current-prediction').innerText = "正在載入 AI 模型...";
+        try {
+            if (!model) {
+                model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+                maxPredictions = model.getTotalClasses();
+            }
+            await setupWebcam();
+            document.getElementById('switchCam').disabled = false;
+        } catch (error) {
+            console.error(error);
+            document.getElementById('current-prediction').innerText = "錯誤: " + error.message;
+        }
+    }
+
+    // 修正版原生相機掛載 (繞過 Teachable machine 內建 webcam 庫的 bug)
+    async function setupWebcam() {
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+        }
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+
+        const container = document.getElementById("webcam-container");
+        container.innerHTML = ""; // 清空
+
+        // 建立原生 HTML5 Video 標籤
+        const video = document.createElement("video");
+        video.setAttribute("autoplay", "");
+        video.setAttribute("playsinline", ""); // 手機端網頁不可或缺
+        video.setAttribute("muted", "");
+        if (useFacingMode === "user") {
+            video.classList.add("mirror");
+        }
+
+        const constraints = {
+            video: {
+                facingMode: { ideal: useFacingMode },
+                width: { ideal: 480 },
+                height: { ideal: 480 }
+            },
+            audio: false
+        };
+
+        // 請求權限並獲取鏡頭
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = localStream;
+        container.appendChild(video);
+        
+        // 等待影片成功載入
+        await new Promise((resolve) => {
+            video.onloadedmetadata = () => {
+                video.play();
+                resolve();
+            };
+        });
+
+        // 初始化顯示條
+        const labelContainer = document.getElementById("label-container");
+        labelContainer.innerHTML = "";
+        for (let i = 0; i < maxPredictions; i++) {
+            let bar = document.createElement("div");
+            bar.className = "label-bar";
+            bar.innerHTML = `<div class="label-fill" id="fill-${i}"></div><div class="label-text" id="text-${i}"></div>`;
+            labelContainer.appendChild(bar);
+        }
+
+        // 啟動預測迴圈
+        async function predictLoop() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                const prediction = await model.predict(video);
+                let highestClass = "";
+                let highestProb = 0;
+
+                for (let i = 0; i < maxPredictions; i++) {
+                    const className = prediction[i].className;
+                    const prob = prediction[i].probability;
+                    document.getElementById(`fill-${i}`).style.width = (prob * 100) + "%";
+                    document.getElementById(`text-${i}`).innerText = `${className}: ${(prob * 100).toFixed(0)}%`;
+
+                    if (prob > highestProb) {
+                        highestProb = prob;
+                        highestClass = className;
+                    }
+                }
+
+                const predBox = document.getElementById('current-prediction');
+                if (highestProb > 0.82) {
+                    predBox.innerText = `辨識結果: ${highestClass} (${(highestProb*100).toFixed(0)}%)`;
+                    if (highestClass !== lastCommand) {
+                        lastCommand = highestClass;
+                        sendBleCommand(highestClass);
+                    }
+                } else {
+                    predBox.innerText = "辨識中...";
+                }
+            }
+            animationFrameId = requestAnimationFrame(predictLoop);
+        }
+        predictLoop();
+    }
+
+    async function toggleCamera() {
+        useFacingMode = (useFacingMode === "user") ? "environment" : "user";
+        document.getElementById('current-prediction').innerText = "切換鏡頭中...";
+        try {
+            await setupWebcam();
+        } catch (e) {
+            document.getElementById('current-prediction').innerText = "切換失敗: " + e.message;
+        }
+    }
+
+    async function sendBleCommand(cmd) {
+        if (!bleCharacteristic) return;
+        try {
+            const encoder = new TextEncoder();
+            await bleCharacteristic.writeValue(encoder.encode(cmd));
+            console.log("發送藍牙: " + cmd);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+</script>
+
+</body>
+</html>
