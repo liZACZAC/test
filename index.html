@@ -50,8 +50,6 @@
     let bleCharacteristic = null;
     let useFacingMode = "user"; 
     let maxPredictions = 3;
-    
-    // 【新增控制變數】
     let isCooldown = false; 
 
     // 1. 藍牙連線
@@ -90,7 +88,7 @@
         }
     }
 
-    // 原生相機掛載
+    // 相機掛載
     async function setupWebcam() {
         if (localStream) { localStream.getTracks().forEach(track => track.stop()); }
         if (animationFrameId) { cancelAnimationFrame(animationFrameId); }
@@ -147,9 +145,7 @@
 
                 const predBox = document.getElementById('current-prediction');
                 
-                // 如果目前處於發送後的 1 秒冷卻時間內，強制跳過 AI 訊號發送
                 if (isCooldown) {
-                    // 保持顯示冷卻狀態，但更新背景提示
                     predBox.classList.add("cooldown");
                 } else {
                     predBox.classList.remove("cooldown");
@@ -157,20 +153,21 @@
                     if (highestProb > 0.85) {
                         predBox.innerText = `辨識結果: ${highestClass} (${(highestProb*100).toFixed(0)}%)`;
                         
-                        // 當辨識到 R 或 L，觸發傳送與 1 秒鎖定
+                        // 只在辨識到 R 或 L 時才發送訊號並鎖定
                         if (highestClass === "R" || highestClass === "L") {
-                            isCooldown = true; // 開啟冷卻鎖
+                            isCooldown = true; 
                             predBox.innerText = `觸發指令【${highestClass}】！鎖定 1 秒...`;
                             
                             sendBleCommand(highestClass);
 
-                            // 1 秒（1000毫秒）後解除鎖定
+                            // 1 秒後解鎖
                             setTimeout(() => {
                                 isCooldown = false;
                             }, 1000);
-                        } else if (highestClass === "mid") {
-                            // mid 訊號不需要冷卻，照常發送即可
-                            sendBleCommand("mid");
+                        } 
+                        else if (highestClass === "mid") {
+                            // 【已修正】辨識到 mid 時只更新網頁狀態文字，不發送任何藍牙訊號
+                            console.log("偵測到 mid，保持安靜不發送訊號。");
                         }
                     } else {
                         predBox.innerText = "辨識中...";
