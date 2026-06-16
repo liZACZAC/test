@@ -2,18 +2,21 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>即時 AI 內網監控中心</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>極速即時 AI 內網監控中心</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
     <style>
-        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; background: #f0f3f5; padding: 15px; margin: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; text-align: center; background: #f0f3f5; padding: 15px; color: #333; margin: 0; }
         .container { max-width: 450px; margin: auto; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
-        button { font-size: 15px; padding: 12px 20px; margin: 5px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; background: #28a745; color: white; }
-        input { padding: 10px; font-size: 15px; width: 60%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 5px; text-align: center; }
+        h2 { margin-top: 10px; color: #2c3e50; }
+        button { font-size: 16px; padding: 14px 24px; margin: 10px 5px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; background: #28a745; color: white; box-shadow: 0 4px 6px rgba(40,167,69,0.2); transition: all 0.2s; }
+        button:active { transform: scale(0.98); }
+        input { padding: 12px; font-size: 16px; width: 70%; margin-bottom: 10px; border: 2px solid #cbd5e1; border-radius: 8px; text-align: center; outline: none; transition: border-color 0.2s; }
+        input:focus { border-color: #3b82f6; }
         #cam-render { margin: 15px auto; border: 4px solid #ccc; border-radius: 10px; width: 320px; height: 240px; background: #000; object-fit: cover; display: block; }
-        .status-box { padding: 12px; margin: 10px 0; border-radius: 8px; font-weight: bold; font-size: 1.1rem; background: #e9ecef; }
+        .status-box { padding: 12px; margin: 10px 0; border-radius: 8px; font-weight: bold; font-size: 1.05rem; background: #e9ecef; white-space: pre-line; line-height: 1.4; transition: all 0.2s; }
         .cooldown { background: #dc3545 !important; color: white !important; }
     </style>
 </head>
@@ -22,60 +25,92 @@
 <div class="container">
     <h2>極速即時 AI 監控中心</h2>
     
-    <input type="text" id="cam-ip" value="111.222.1.X" placeholder="請輸入 ESP32-CAM 的 IP">
+    <input type="text" id="cam-ip" value="192.168.1.X" placeholder="請輸入 ESP32-CAM 的 IP">
     <br>
     <button onclick="initSystem()">啟動即時系統</button>
 
-    <img id="cam-render" crossOrigin="anonymous" src="" alt="等待影像中...">
+    <img id="cam-render" crossOrigin="anonymous" src="" alt="等待影像串流中...">
     
     <div class="status-box" id="mqtt-status">MQTT 控制通道: 未連線</div>
     <div class="status-box" id="current-prediction">AI 狀態: 等待系統啟動...</div>
 </div>
 
 <script type="text/javascript">
-    const MODEL_URL = "https://teachablemachine.withgoogle.com/models/MNvudxhn0/";
+    // ⚠️ 請確保此網址與你在 Teachable Machine 複製的完全一致，結尾必須有斜線 "/"
+    const MODEL_URL = "https://teachablemachine.withgoogle.com/models/MNvudxhn0/"; 
     const TOPIC_CONTROL = "esp32cam/control";
 
     let model, mqttClient;
     let isCooldown = false;
 
+    // 系統初始化入口
     async function initSystem() {
-        document.getElementById('current-prediction').innerText = "載入 AI 模型中...";
-        model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
-        
-        // 1. 連線 MQTT（純粹發送馬達控制指令用，所以非常快）
-        setupMQTT();
+        const predBox = document.getElementById('current-prediction');
+        predBox.innerText = "【1/3】正在嘗試連接 Google 伺服器載入 AI 模型...";
+        predBox.style.color = "#333";
 
-        // 2. 載入即時內網影像
-        const ip = document.getElementById('cam-ip').value.trim();
-        const imgElement = document.getElementById('cam-render');
-        imgElement.src = "http://" + ip; 
+        try {
+            // 嘗試從 Google 雲端載入模型檔案
+            model = await tmImage.load(
+                MODEL_URL + "model.json", 
+                MODEL_URL + "metadata.json"
+            );
+            
+            predBox.innerText = "【2/3】模型載入成功！正在連線雲端 MQTT 控制通道...";
+            
+            // 初始化並連線 MQTT (用來控馬達)
+            setupMQTT();
 
-        // 3. 啟動高頻率即時 AI 辨識迴圈
-        setTimeout(predictLoop, 1000); 
+            // 抓取輸入框的 IP 並直接向 ESP32-CAM 請求內網 MJPEG 串流
+            const ip = document.getElementById('cam-ip').value.trim();
+            const imgElement = document.getElementById('cam-render');
+            imgElement.src = "http://" + ip; 
+            
+            predBox.innerText = "【3/3】系統已全面啟動！開始即時 AI 辨識。";
+            
+            // 延遲 1 秒待影像與通道穩定後，切入極速預測迴圈
+            setTimeout(predictLoop, 1000); 
+
+        } catch (error) {
+            // 如果卡在第一步，捕獲錯誤並直接列印在網頁畫面上
+            predBox.innerText = "❌ AI 模型載入失敗！\n原因：" + error.message + "\n\n【排查提示】\n1. 請檢查網路是否順暢。\n2. 請確認瀏覽器是否安裝了廣告阻擋外掛（如 AdBlock），請將此頁面設為信任或關閉外掛後重試。";
+            predBox.style.color = "red";
+            console.error("詳細模型載入錯誤報告：", error);
+        }
     }
 
+    // 初始化 MQTT 連線邏輯
     function setupMQTT() {
+        // 連線至穩定的全球公用 Mosquitto WebSocket 埠號 (8081)
         mqttClient = new Paho.MQTT.Client("test.mosquitto.org", 8081, "web_client_" + parseInt(Math.random() * 10000, 10));
+        
         mqttClient.connect({
-            useSSL: true,
+            useSSL: true, // 網頁端強制啟用 SSL 加密安全連線
+            timeout: 5,   // 5秒連線超時
             onSuccess: () => {
-                document.getElementById('mqtt-status').innerText = "MQTT 控制通道: 已就緒 (Mosquitto)";
-                document.getElementById('mqtt-status').style.color = "green";
+                const mqttStatus = document.getElementById('mqtt-status');
+                mqttStatus.innerText = "MQTT 控制通道: 已就緒 (Mosquitto)";
+                mqttStatus.style.color = "green";
+            },
+            onFailure: (err) => {
+                const mqttStatus = document.getElementById('mqtt-status');
+                mqttStatus.innerText = "MQTT 通道初始化失敗: " + err.errorMessage;
+                mqttStatus.style.color = "red";
             }
         });
     }
 
-    // 真正的即時預測迴圈 (每秒執行 10~20 次，不再卡頓)
+    // 瀏覽器極速辨識核心迴圈
     async function predictLoop() {
         const imgElement = document.getElementById('cam-render');
         
-        // 確保圖片已經載入完成，才餵給 AI
+        // 確保模型已準備好、不在冷卻狀態，且 <img> 標籤內已有實際載入的影像像素
         if (model && !isCooldown && imgElement.complete && imgElement.naturalWidth !== 0) {
             const prediction = await model.predict(imgElement);
             let highestClass = "";
             let highestProb = 0;
 
+            // 找出當前畫面中信心度最高的分類項目
             for (let i = 0; i < prediction.length; i++) {
                 if (prediction[i].probability > highestProb) {
                     highestProb = prediction[i].probability;
@@ -84,29 +119,34 @@
             }
 
             const predBox = document.getElementById('current-prediction');
+            
+            // 信心度大於 85% 才觸發動作
             if (highestProb > 0.85) {
-                predBox.innerText = `辨識結果: ${highestClass} (${(highestProb*100).toFixed(0)}%)`;
+                predBox.innerText = `辨識結果: ${highestClass} (${(highestProb * 100).toFixed(0)}%)`;
 
+                // 偵測到 R 或 L 訊號，立刻送出 MQTT 指令
                 if (highestClass === "R" || highestClass === "L") {
-                    isCooldown = true;
+                    isCooldown = true; // 開啟防重複觸發冷卻
                     predBox.classList.add("cooldown");
-                    predBox.innerText = `觸發【${highestClass}】！控制馬達中...`;
+                    predBox.innerText = `觸發指令【${highestClass}】！控制馬達中...`;
 
-                    // 發送指令（走 MQTT 速度極快）
+                    // 透過雲端 MQTT 發送輕量化字串（毫秒級發送，絕不卡頓）
                     const mqttMessage = new Paho.MQTT.Message(highestClass);
                     mqttMessage.destinationName = TOPIC_CONTROL;
                     mqttClient.send(mqttMessage);
 
+                    // 3 秒後自動解除冷卻鎖定，恢復辨識
                     setTimeout(() => {
                         isCooldown = false;
                         predBox.classList.remove("cooldown");
                     }, 3000);
                 }
             } else {
-                predBox.innerText = "辨識中...";
+                predBox.innerText = "影像辨識中...";
             }
         }
-        // 使用 requestAnimationFrame 讓 AI 以瀏覽器最快極速不斷辨識
+        
+        // 拋棄传统 setInterval，改用 requestAnimationFrame 讓 AI 跟隨瀏覽器刷新率進行最高頻率預測
         requestAnimationFrame(predictLoop);
     }
 </script>
